@@ -9,6 +9,7 @@ use cubecl_environment::backtrace::BackTrace;
 use cubecl_environment::collections::HashMap;
 use wgpu::{QUERY_SIZE, QuerySet, QuerySetDescriptor, QueryType};
 
+use crate::compute::device_poison::PoisonWatch;
 use crate::thread_bound::ThreadBound;
 
 type QuerySetId = u64;
@@ -248,16 +249,11 @@ fn create_map_buffer(device: &wgpu::Device, count: u32) -> wgpu::Buffer {
 
 // Measure a timestamp to align the CPU & GPU timelines.
 #[cfg(feature = "profile-tracy")]
-fn get_cur_timestamp(queue: &wgpu::Queue, device: &wgpu::Device) -> u64 {
+fn get_cur_timestamp(queue: &wgpu::Queue, device: &wgpu::Device, poison: &PoisonWatch) -> u64 {
     // Make sure no work is outstanding.
 
     use wgpu::BufferAddress;
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None, // Wait for most recent
-            timeout: None,
-        })
-        .unwrap();
+    poison.wait_unless_lost(device, queue, None).unwrap();
 
     // Resolve a timestamp for the query set.
     let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -298,14 +294,11 @@ fn get_cur_timestamp(queue: &wgpu::Queue, device: &wgpu::Device) -> u64 {
 
     let commands = [timestamp_encoder.finish(), copy_encoder.finish()];
 
-    queue.submit(commands);
+    let submission = queue.submit(commands);
     map_buffer.slice(..).map_async(wgpu::MapMode::Read, |_| ());
 
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None, // Wait for most recent
-            timeout: None,
-        })
+    poison
+        .wait_unless_lost(device, queue, Some(submission))
         .unwrap();
 
     let view = map_buffer.slice(..).get_mapped_range().unwrap();
@@ -319,11 +312,12 @@ impl QueryProfiler {
     pub fn new(
         queue: &wgpu::Queue,
         #[allow(unused)] device: &wgpu::Device,
+        #[allow(unused)] poison: &PoisonWatch,
         budget: Arc<TimestampQuerySetBudget>,
         sampling: TimestampSampling,
     ) -> Self {
         #[cfg(feature = "profile-tracy")]
-        let sync_timestamps = get_cur_timestamp(queue, device);
+        let sync_timestamps = get_cur_timestamp(queue, device, poison);
 
         #[cfg(not(feature = "profile-tracy"))]
         let sync_timestamps = 0;
@@ -483,6 +477,7 @@ impl QueryProfiler {
         &self,
         map_buffer: Option<wgpu::Buffer>,
         poll_signal: Arc<()>,
+        poison: &PoisonWatch,
     ) -> Result<ProfileDuration, ProfileError> {
         if let Some(map_buffer) = map_buffer {
             let period = self.queue_period;
@@ -496,6 +491,7 @@ impl QueryProfiler {
             // drive. A map that never completes still releases it: dropping the
             // buffer aborts the map and calls this back.
             let (sender, rec) = cubecl_environment::future::channel::bounded(1);
+            poison.wake_on_loss(&sender);
             map_buffer
                 .slice(..)
                 .map_async(wgpu::MapMode::Read, move |v| {
@@ -508,10 +504,15 @@ impl QueryProfiler {
             // The future holds the map buffer, which is a JS value on wasm.
             Ok(ProfileDuration::new_device_time_maybe(ThreadBound::new(
                 async move {
-                    rec.recv()
-                        .await
-                        .expect("Unable to receive buffer slice result.")
-                        .expect("Failed to map buffer");
+                    match rec.recv().await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            log::warn!("wgpu: a profile's timestamps could not be mapped ({err})");
+                            return None;
+                        }
+                        // Closed by a device loss, which the device-lost callback has logged.
+                        Err(_) => return None,
+                    }
 
                     let binding = map_buffer.slice(..).get_mapped_range().unwrap();
                     let data: &[u64] = bytemuck::try_cast_slice(&binding).unwrap();
