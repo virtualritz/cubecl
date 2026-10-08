@@ -142,7 +142,7 @@ pub enum TuneCacheResult {
     Unchecked,
     /// A tuning job is in flight for this key — the worker hasn't published a result yet.
     /// Callers that see this fall through to running the operation rather than blocking on
-    /// the in-flight job.
+    /// the in-flight job. A tune stopped on a lost device leaves its key here for good.
     Pending,
     /// No operation is found yet.
     Miss,
