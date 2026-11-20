@@ -78,8 +78,17 @@ fn cube_impl(args: TokenStream, input: TokenStream) -> syn::Result<TokenStream> 
                 false => quote![],
             };
 
+            // The item is re-emitted as host Rust next to its expansion. Kernel
+            // bodies index `&[T]` buffers, and the expansion turns that syntax into
+            // device reads, so `indexing_slicing` and `manual_memcpy` on the host
+            // copy only flag kernel code that has no host meaning.
             return Ok(TokenStream::from(quote! {
-                #[allow(dead_code, clippy::too_many_arguments)]
+                #[allow(
+                    dead_code,
+                    clippy::too_many_arguments,
+                    clippy::indexing_slicing,
+                    clippy::manual_memcpy
+                )]
                 #extra_allow
                 #item
                 #kernel
