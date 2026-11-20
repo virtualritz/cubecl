@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::WgpuCompiler;
+use crate::thread_bound::ThreadBound;
 use crate::{
     AutoCompiler, AutoGraphicsApi, GraphicsApi, WgpuBackend, WgpuDevice, WgpuDeviceKind, backend,
     compute::WgpuServer, contiguous_strides,
@@ -226,7 +227,10 @@ fn backend_candidates(backend: WgpuBackend) -> alloc::vec::Vec<wgpu::Backend> {
 /// The instance each backend's devices come up on, kept so a device going away never destroys
 /// one. Locked whenever an instance is created or dropped: the Vulkan loader crashes when
 /// instances come and go on several threads at once.
-static INSTANCES: Mutex<Vec<(wgpu::Backend, wgpu::Instance)>> = Mutex::new(Vec::new());
+///
+/// On wasm with atomics an instance is a JS value of the thread that made it, so each thread
+/// finds only its own.
+static INSTANCES: Mutex<Vec<(wgpu::Backend, ThreadBound<wgpu::Instance>)>> = Mutex::new(Vec::new());
 
 /// The adapters `backend` has on this machine, asked through an instance limited to it.
 #[cfg(not(target_family = "wasm"))]
@@ -943,15 +947,18 @@ async fn request_adapter(
 /// The instance devices on `backend` come up on, created with the first device's `flags`.
 fn device_instance(backend: wgpu::Backend, flags: InstanceFlags) -> wgpu::Instance {
     let mut instances = INSTANCES.lock();
-    if let Some((_, instance)) = instances.iter().find(|(api, _)| *api == backend) {
-        return instance.clone();
+    if let Some((_, instance)) = instances
+        .iter()
+        .find(|(api, instance)| *api == backend && instance.is_local())
+    {
+        return instance.get().clone();
     }
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: backend.into(),
         flags,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
-    instances.push((backend, instance.clone()));
+    instances.push((backend, ThreadBound::new(instance.clone())));
     instance
 }
 

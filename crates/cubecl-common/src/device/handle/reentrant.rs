@@ -123,6 +123,7 @@ impl ReentrantMutexDeviceHandle {
         let lock = Self::locate::<S>(device);
         let id = TypeId::of::<S>();
 
+        lock.lock.assert_owner(device);
         let state = lock.lock.lock.lock();
         let mut map = state.map.borrow_mut();
 
@@ -150,6 +151,7 @@ impl ReentrantMutexDeviceHandle {
 
     /// Locks the current device making sure this device can be used.
     pub fn lock_device(&self) -> DeviceGuard<'_> {
+        self.lock.assert_owner(self.device_id);
         let state = self.lock.lock.lock();
 
         DeviceGuard {
@@ -166,6 +168,7 @@ impl ReentrantMutexDeviceHandle {
     /// If the same state type is locked multiple times on the same thread.
     fn with_lock<R>(&self, f: impl FnOnce(&mut dyn Any) -> R) -> R {
         let key = self.type_id;
+        self.lock.assert_owner(self.device_id);
         let state = self.lock.lock.lock();
 
         // Take the entry out of the map. This gives us owned data with
@@ -234,6 +237,35 @@ struct DeviceLocator {
 #[derive(Clone)]
 struct DeviceStateLock {
     lock: Arc<ReentrantMutex<DeviceStateMap>>,
+    /// The thread the device was first located on.
+    ///
+    /// On wasm with atomics, wgpu's WebGPU objects are JS values that belong
+    /// to the thread that made them, so a device can only be used from that
+    /// thread. The services stay `Send` to fit the shared registry, and this
+    /// check is what keeps a second thread from reaching them.
+    #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+    owner: std::thread::ThreadId,
+}
+
+impl DeviceStateLock {
+    /// Panics if the current thread is not the device's owner. A no-op on
+    /// every target but wasm with atomics, where a panic beats handing a JS
+    /// object to a thread it does not belong to.
+    #[inline]
+    fn assert_owner(&self, device: DeviceId) {
+        #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+        {
+            let current = std::thread::current().id();
+            assert!(
+                current == self.owner,
+                "device {device:?} belongs to thread {:?}, not {current:?}: on wasm with \
+                 atomics a device can only be used from the thread that first located it",
+                self.owner
+            );
+        }
+        #[cfg(not(all(target_family = "wasm", target_feature = "atomics")))]
+        let _ = device;
+    }
 }
 
 struct DeviceStateMap {
@@ -265,6 +297,8 @@ impl DeviceStateLock {
 
                 let value = DeviceStateLock {
                     lock: Arc::new(ReentrantMutex::new(state)),
+                    #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+                    owner: std::thread::current().id(),
                 };
 
                 locator_state.states.insert(device, value);

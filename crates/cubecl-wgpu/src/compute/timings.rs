@@ -9,6 +9,8 @@ use cubecl_environment::backtrace::BackTrace;
 use cubecl_environment::collections::HashMap;
 use wgpu::{QUERY_SIZE, QuerySet, QuerySetDescriptor, QueryType};
 
+use crate::thread_bound::ThreadBound;
+
 type QuerySetId = u64;
 
 /// Slot a profile's start timestamp is written to, once, by the pass that opens it.
@@ -503,48 +505,51 @@ impl QueryProfiler {
                     let _ = sender.try_send(v);
                 });
 
-            Ok(ProfileDuration::new_device_time_maybe(async move {
-                rec.recv()
-                    .await
-                    .expect("Unable to receive buffer slice result.")
-                    .expect("Failed to map buffer");
+            // The future holds the map buffer, which is a JS value on wasm.
+            Ok(ProfileDuration::new_device_time_maybe(ThreadBound::new(
+                async move {
+                    rec.recv()
+                        .await
+                        .expect("Unable to receive buffer slice result.")
+                        .expect("Failed to map buffer");
 
-                let binding = map_buffer.slice(..).get_mapped_range().unwrap();
-                let data: &[u64] = bytemuck::try_cast_slice(&binding).unwrap();
-                let (raw_start, raw_end) = (data[0], data[1]);
-                drop(binding);
-                map_buffer.unmap();
+                    let binding = map_buffer.slice(..).get_mapped_range().unwrap();
+                    let data: &[u64] = bytemuck::try_cast_slice(&binding).unwrap();
+                    let (raw_start, raw_end) = (data[0], data[1]);
+                    drop(binding);
+                    map_buffer.unmap();
 
-                // The window's two ends have to have been written, and in order.
-                //
-                // A slot the GPU never wrote back reads as zero, and an end that
-                // precedes its start is a pair that does not describe one span --
-                // observed on Metal, where the two ends resolved from passes the
-                // device had not ordered that way, some microseconds apart.
-                //
-                // Both used to reach `duration()`, which subtracts saturating and
-                // so answered zero. Zero is the fastest duration there is, so an
-                // autotune candidate carrying one wins every comparison it enters:
-                // that is how an unmeasured row came to be cached as the best.
-                // Neither is a measurement, so neither gets a number.
-                if raw_start == 0 || raw_end == 0 || raw_end <= raw_start {
-                    return None;
-                }
+                    // The window's two ends have to have been written, and in order.
+                    //
+                    // A slot the GPU never wrote back reads as zero, and an end that
+                    // precedes its start is a pair that does not describe one span --
+                    // observed on Metal, where the two ends resolved from passes the
+                    // device had not ordered that way, some microseconds apart.
+                    //
+                    // Both used to reach `duration()`, which subtracts saturating and
+                    // so answered zero. Zero is the fastest duration there is, so an
+                    // autotune candidate carrying one wins every comparison it enters:
+                    // that is how an unmeasured row came to be cached as the best.
+                    // Neither is a measurement, so neither gets a number.
+                    if raw_start == 0 || raw_end == 0 || raw_end <= raw_start {
+                        return None;
+                    }
 
-                // Get nr. of ticks since epoch.
-                let data_start = raw_start.saturating_sub(epoch_tick);
-                let data_end = raw_end.saturating_sub(epoch_tick);
+                    // Get nr. of ticks since epoch.
+                    let data_start = raw_start.saturating_sub(epoch_tick);
+                    let data_end = raw_end.saturating_sub(epoch_tick);
 
-                // Convert to a duration.
-                let start_duration = Duration::from_nanos((data_start as f64 * period) as u64);
-                let end_duration = Duration::from_nanos((data_end as f64 * period) as u64);
+                    // Convert to a duration.
+                    let start_duration = Duration::from_nanos((data_start as f64 * period) as u64);
+                    let end_duration = Duration::from_nanos((data_end as f64 * period) as u64);
 
-                // Convert to an `Instant`.
-                let instant_start = epoch_instant + start_duration;
-                let instant_end = epoch_instant + end_duration;
+                    // Convert to an `Instant`.
+                    let instant_start = epoch_instant + start_duration;
+                    let instant_end = epoch_instant + end_duration;
 
-                Some(ProfileTicks::from_start_end(instant_start, instant_end))
-            }))
+                    Some(ProfileTicks::from_start_end(instant_start, instant_end))
+                },
+            )))
         } else {
             // Nothing the window enqueued was timestamped, so there is no timing to resolve.
             //
