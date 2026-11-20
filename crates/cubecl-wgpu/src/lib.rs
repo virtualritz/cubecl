@@ -9,6 +9,7 @@ mod compute;
 mod device;
 mod graphics;
 mod runtime;
+mod thread_bound;
 
 pub use compiler::base::*;
 pub use compute::*;

@@ -10,6 +10,7 @@ use crate::{
     WgpuResource, WgpuStorage,
     controller::WgpuAllocController,
     schedule::{Addresses, ScheduleTask},
+    thread_bound::ThreadBound,
 };
 use core::iter;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -452,7 +453,8 @@ impl WgpuStream {
         let poll = self.poll.start_polling();
         let poison = self.poison.clone();
 
-        Box::pin(async move {
+        // The future holds the staging buffers, which are JS values on wasm.
+        Box::pin(ThreadBound::new(async move {
             for receiver in callbacks.iter().flatten() {
                 let mapped = receiver.recv().await;
                 // The device can be poisoned while the copy is in flight.
@@ -494,7 +496,7 @@ impl WgpuStream {
             };
 
             Ok(result)
-        })
+        }))
     }
 
     /// Device timing needs a counter sample buffer per query set, capped per device on Metal.
@@ -671,7 +673,8 @@ impl WgpuStream {
         let poll = self.poll.start_polling();
         let poison = self.poison.clone();
 
-        Box::pin(async move {
+        // The future holds the queue and the error scope, which are JS values on wasm.
+        Box::pin(ThreadBound::new(async move {
             let (sender, receiver) = cubecl_environment::future::channel::bounded::<()>(1);
             queue.on_submitted_work_done(move || {
                 // Signal that we're done.
@@ -693,7 +696,7 @@ impl WgpuStream {
                 Some(err) => Err(err),
                 None => Ok(()),
             }
-        })
+        }))
     }
 
     pub(crate) fn create_uniform(&mut self, data: &[u8]) -> WgpuResource {
