@@ -71,7 +71,7 @@ impl RuntimeConfig for CubeClRuntimeConfig {
 
     #[cfg(std_io)]
     fn override_from_env(mut self) -> Self {
-        use super::compilation::{CompilationLogLevel, F16Evaluation};
+        use super::compilation::{CompilationLogLevel, F16Evaluation, FpContraction};
         use crate::config::{
             autotune::{AutotuneLevel, AutotuneLogLevel},
             profiling::ProfilingLogLevel,
@@ -166,6 +166,14 @@ impl RuntimeConfig for CubeClRuntimeConfig {
                 "accumulators" => {
                     self.compilation.f16_evaluation = Some(F16Evaluation::Accumulators);
                 }
+                _ => {}
+            }
+        }
+
+        if let Ok(val) = std::env::var("CUBECL_FP_CONTRACT") {
+            match val.as_str() {
+                "fast" => self.compilation.fp_contraction = Some(FpContraction::Fast),
+                "off" => self.compilation.fp_contraction = Some(FpContraction::Off),
                 _ => {}
             }
         }

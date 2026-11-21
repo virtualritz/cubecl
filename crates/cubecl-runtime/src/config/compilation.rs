@@ -17,6 +17,47 @@ pub struct CompilationConfig {
     /// chooses by whether the host computes in f16 directly. Other runtimes ignore it.
     #[serde(default)]
     pub f16_evaluation: Option<F16Evaluation>,
+    /// Whether compilers fuse a multiply and the add or subtract that consumes it into one
+    /// `fma`. `None` is [`FpContraction::Fast`], and leaves the choice open to a library that
+    /// sets the configuration with [`RuntimeConfig::try_set`](super::RuntimeConfig::try_set).
+    #[serde(default)]
+    pub fp_contraction: Option<FpContraction>,
+}
+
+/// Whether compilers fuse `a * b + c`, `a * b - c` and `c - a * b` into a fused multiply-add,
+/// named after clang's `-ffp-contract`.
+///
+/// A fused multiply-add rounds once where the separate operations round twice, so a fused
+/// result can differ from the same expression evaluated on the host. Code that compares device
+/// output with a host reference can turn fusion off.
+///
+/// The setting controls the fusion pass of `CubeCL`'s own compilers. A backend compiler can
+/// still fuse on its own: LLVM's contraction flags, `nvcc`'s `-fmad`, or a GPU driver.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FpContraction {
+    /// Fuse a product into the add or subtract that consumes it, if nothing else uses it.
+    #[default]
+    #[serde(rename = "fast")]
+    Fast,
+    /// Keep every multiply and add separately rounded, as written.
+    #[serde(rename = "off")]
+    Off,
+}
+
+impl FpContraction {
+    /// Whether compilers may fuse.
+    pub fn allows_fusion(self) -> bool {
+        matches!(self, Self::Fast)
+    }
+}
+
+/// The [`FpContraction`] of the global [`CubeClRuntimeConfig`](super::CubeClRuntimeConfig).
+pub fn fp_contraction() -> FpContraction {
+    use super::RuntimeConfig as _;
+    super::CubeClRuntimeConfig::get()
+        .compilation
+        .fp_contraction
+        .unwrap_or_default()
 }
 
 /// How far an f32 intermediate is allowed to travel before it is rounded back to f16.

@@ -157,7 +157,9 @@ impl WgslCompiler {
         func_passes.add_pass(LowerBuiltinsPass);
 
         func_passes.add_pass(SCCPPass);
-        func_passes.add_pass(InstCombinePass::default());
+        if cubecl_server::config::compilation::fp_contraction().allows_fusion() {
+            func_passes.add_pass(InstCombinePass::default());
+        }
         func_passes.add_pass(SimpleCSEPass::without_memory());
         func_passes.add_pass(SimplifyOpsPass::default());
         func_passes.add_pass(DCEPass);
