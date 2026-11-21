@@ -241,7 +241,9 @@ impl SpirvCompiler {
 
         let mut func_passes = OpPass::<FuncOp, Passes>::default();
         func_passes.add_pass(SCCPPass);
-        func_passes.add_pass(InstCombinePass::default());
+        if cubecl_runtime::config::compilation::fp_contraction().allows_fusion() {
+            func_passes.add_pass(InstCombinePass::default());
+        }
         func_passes.add_pass(SimpleCSEPass::without_memory());
         func_passes.add_pass(SimplifyOpsPass::default());
         func_passes.add_pass(PromoteBitwisePass);

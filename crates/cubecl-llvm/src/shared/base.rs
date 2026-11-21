@@ -438,7 +438,9 @@ fn lower(
     func_passes.add_pass(SimpleCSEPass::with_memory());
     func_passes.add_pass(SimplifyOpsPass::default());
     func_passes.add_pass(PromoteBitwisePass);
-    func_passes.add_pass(InstCombinePass::default());
+    if cubecl_runtime::config::compilation::fp_contraction().allows_fusion() {
+        func_passes.add_pass(InstCombinePass::default());
+    }
     // LLVM converts between `f32` and `bfloat`; a wider source would round twice through `f32`.
     func_passes.add_pass(LowerWideBf16CastPass::default());
     func_passes.add_pass(LowerMinifloatCastPass::default());
